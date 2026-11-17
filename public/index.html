@@ -5140,11 +5140,16 @@ function mergeDataset(ds, inc) {
     if (!ds.orders[k]) ds.orders[k] = inc.orders[k];
   });
   Object.keys(inc.asin || {}).forEach(function (k) {
-    if (!ds.asin[k]) { ds.asin[k] = inc.asin[k]; wins++; if (inc.asinAt && inc.asinAt[k]) { ds.asinAt = ds.asinAt || {}; ds.asinAt[k] = inc.asinAt[k]; } }
+    if (!ds.asin[k]) {
+      ds.asin[k] = inc.asin[k]; wins++;
+      /* the window's pull time comes with it */
+      if (inc.asinAt && inc.asinAt[k] != null) { ds.asinAt = ds.asinAt || {}; ds.asinAt[k] = inc.asinAt[k]; }
+    }
   });
-  /* KetoChow (Nov 2026): advertising by product, the campaigns' branded
-     flags and the Products page's QC targets travel with a page copy too —
-     a copy dropped on a new project came without the per-product ad figures */
+  /* Nov 2026: a page copy carries the whole document. Advertising by product
+     (by day), the campaigns' branded flags and the Products page's QC targets
+     were left behind, so a brand moved to a new project lost its per-product
+     ad figures. Fill only, like everything else here. */
   if (inc.adAsin) {
     ds.adAsin = ds.adAsin || {};
     Object.keys(inc.adAsin).forEach(function (d) { if (!ds.adAsin[d]) ds.adAsin[d] = inc.adAsin[d]; });
@@ -23298,7 +23303,7 @@ function checkSiteDirty() {
 }
 function paintSaveBtn() {
   const b = document.getElementById('saveBtn');
-  if (!b || b.textContent === 'Saving…') return;
+  if (!b || /^Saving…/.test(b.textContent)) return;
   const dirty = checkSiteDirty();
   b.disabled = !dirty;
   b.classList.toggle('saved', !dirty);
@@ -23312,6 +23317,8 @@ setInterval(function () {
   paintSaveBtn();
 }, 3000);
 
+/* the size of one save request's body: under what a function may receive */
+const SAVE_PART = (typeof window !== 'undefined' && window.RT_SAVE_PART) || 4 * 1024 * 1024;
 async function saveToSite() {
   const btn = document.getElementById('saveBtn');
   btn.disabled = true;
@@ -23320,11 +23327,25 @@ async function saveToSite() {
   let ok = false;
   try {
     const body = await gzipString(JSON.stringify(DS));
-    const res = await fetch('/api/save?brand=' + encodeURIComponent(BRAND || ''), {
-      method: 'POST', credentials: 'same-origin', body: body,
-      headers: { 'x-report-write': '1', 'x-report-gzip':
-        typeof CompressionStream === 'undefined' ? '0' : '1' },
-    });
+    const headers = { 'x-report-write': '1', 'x-report-gzip':
+        typeof CompressionStream === 'undefined' ? '0' : '1' };
+    const url = '/api/save?brand=' + encodeURIComponent(BRAND || '');
+    let res;
+    if (body.size <= SAVE_PART) {
+      res = await fetch(url, { method: 'POST', credentials: 'same-origin', body: body, headers: headers });
+    } else {
+      /* KetoChow (Nov 2026): one request carries about 6 MB, so a larger
+         packed document goes in parts, one after another; the server joins
+         them when the last arrives */
+      const n = Math.ceil(body.size / SAVE_PART);
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      for (let i = 0; i < n; i++) {
+        btn.textContent = 'Saving… ' + (i + 1) + ' of ' + n;
+        res = await fetch(url + '&upload=' + id + '&part=' + i + '&of=' + n, { method: 'POST', credentials: 'same-origin',
+          body: body.slice(i * SAVE_PART, Math.min(body.size, (i + 1) * SAVE_PART)), headers: headers });
+        if (!res.ok) break;
+      }
+    }
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || ('save failed (' + res.status + ')'));
     logLine('ok', 'Saved to the site at ' + out.savedAt +

@@ -1,7 +1,12 @@
 import { gunzipSync } from 'node:zlib';
 import { authOf, brandSlug, store, DATA_KEY, META_KEY, json } from './_shared.mjs';
 
-const MAX_BYTES = 12 * 1024 * 1024;
+const MAX_BYTES = 64 * 1024 * 1024;
+/* KetoChow (Nov 2026): one request may carry about 6 MB, and the packed
+   document outgrows that. The page then sends it in parts —
+   ?upload=<id>&part=<i>&of=<n> — each kept in the store until the last one
+   arrives; the last joins them and is saved like a single answer. */
+const PART_MAX = 5 * 1024 * 1024;
 
 export default async (req) => {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -19,8 +24,28 @@ export default async (req) => {
     return json({ error: 'this project only serves ' + brandSlug() }, 403);
   }
 
-  const buf = Buffer.from(await req.arrayBuffer());
+  let buf = Buffer.from(await req.arrayBuffer());
   if (!buf.length) return json({ error: 'empty body' }, 400);
+  const q = new URL(req.url).searchParams;
+  const upload = q.get('upload');
+  if (upload) {
+    if (!/^[a-z0-9]{8,40}$/.test(upload)) return json({ error: 'bad upload id' }, 400);
+    const part = Number(q.get('part')), of = Number(q.get('of'));
+    if (!(of >= 1 && of <= 40 && part >= 0 && part < of)) return json({ error: 'bad part' }, 400);
+    if (buf.length > PART_MAX) return json({ error: 'part too large' }, 413);
+    const tmp = await store('report');
+    await tmp.set('upload:' + upload + ':' + part, new Uint8Array(buf).buffer);
+    if (part < of - 1) return json({ ok: true, part: part, of: of });
+    /* the last part: join them all, in order */
+    const parts = [];
+    for (let i = 0; i < of; i++) {
+      const v = await tmp.get('upload:' + upload + ':' + i, { type: 'arrayBuffer' });
+      if (v == null) return json({ error: 'part ' + i + ' of ' + of + ' is missing — save again' }, 409);
+      parts.push(Buffer.from(v));
+    }
+    for (let i = 0; i < of; i++) { try { await tmp.delete('upload:' + upload + ':' + i); } catch (e) { /* left for the next save */ } }
+    buf = Buffer.concat(parts);
+  }
   if (buf.length > MAX_BYTES) return json({ error: 'too large' }, 413);
 
   let ds;
