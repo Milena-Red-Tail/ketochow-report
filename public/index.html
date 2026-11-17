@@ -5140,8 +5140,17 @@ function mergeDataset(ds, inc) {
     if (!ds.orders[k]) ds.orders[k] = inc.orders[k];
   });
   Object.keys(inc.asin || {}).forEach(function (k) {
-    if (!ds.asin[k]) { ds.asin[k] = inc.asin[k]; wins++; }
+    if (!ds.asin[k]) { ds.asin[k] = inc.asin[k]; wins++; if (inc.asinAt && inc.asinAt[k]) { ds.asinAt = ds.asinAt || {}; ds.asinAt[k] = inc.asinAt[k]; } }
   });
+  /* KetoChow (Nov 2026): advertising by product, the campaigns' branded
+     flags and the Products page's QC targets travel with a page copy too —
+     a copy dropped on a new project came without the per-product ad figures */
+  if (inc.adAsin) {
+    ds.adAsin = ds.adAsin || {};
+    Object.keys(inc.adAsin).forEach(function (d) { if (!ds.adAsin[d]) ds.adAsin[d] = inc.adAsin[d]; });
+  }
+  if (inc.campaigns) ds.campaigns = Object.assign({}, inc.campaigns, ds.campaigns || {});
+  if (inc.qcWant) ds.qcWant = Object.assign({}, inc.qcWant, ds.qcWant || {});
   Object.keys(inc.cogs || {}).forEach(function (k) {
     if (!ds.cogs[k]) { ds.cogs[k] = inc.cogs[k]; costs++; }
   });
@@ -23425,8 +23434,39 @@ function showLogin(why) {
   document.getElementById('loginPw').focus();
 }
 
+/* ---------- the report kept in this browser (Nov 2026) ----------
+ * The packed document, as the server last sent it, with its stamp — in
+ * IndexedDB, one record per brand. Only a copy: cleared, missing or
+ * unreadable, the page simply asks for the whole document again. */
+function reportCacheDb() {
+  return new Promise(function (resolve) {
+    try {
+      const rq = indexedDB.open('rt-report-cache', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('docs'); };
+      rq.onsuccess = function () { resolve(rq.result); };
+      rq.onerror = function () { resolve(null); };
+    } catch (e) { resolve(null); }
+  });
+}
+async function reportCacheGet(slug) {
+  const db = await reportCacheDb();
+  if (!db) return null;
+  return new Promise(function (resolve) {
+    try {
+      const rq = db.transaction('docs', 'readonly').objectStore('docs').get(slug);
+      rq.onsuccess = function () { const v = rq.result; resolve(v && v.stamp && v.blob ? v : null); };
+      rq.onerror = function () { resolve(null); };
+    } catch (e) { resolve(null); }
+  });
+}
+async function reportCachePut(slug, stamp, blob) {
+  const db = await reportCacheDb();
+  if (!db) return;
+  try { db.transaction('docs', 'readwrite').objectStore('docs').put({ stamp: stamp, blob: blob, at: Date.now() }, slug); } catch (e) { /* a copy that cannot be kept is no fault */ }
+}
+
 /** Fetch one brand's dataset and draw the report. */
-async function openBrand(slug) {
+async function openBrand(slug, again) {
   BRAND = slug;
   /* Say in the address which brand is on screen. A session with one brand
      lands on '/' and the report was drawn there, leaving an address that
@@ -23441,10 +23481,41 @@ async function openBrand(slug) {
   } catch (e) { /* an address that cannot be rewritten is not worth failing over */ }
   /* stay on the loading screen while the dataset is on its way — begin()
      switches to the report once there is something to draw */
-  const res = await fetch('/api/data?brand=' + encodeURIComponent(slug),
-    { credentials: 'same-origin' });
+  /* KetoChow (Nov 2026): the account's document is larger than one function
+     answer can carry, so the page says it can unpack gzip and this project's
+     function sends it packed — in parts when even packed it is too large
+     (the CountryMax protocol). */
+  const canGz = typeof DecompressionStream !== 'undefined';
+  const ask = { credentials: 'same-origin', headers: canGz ? { 'x-report-gzip': '1' } : {} };
+  /* the copy kept in this browser from the last visit (Nov 2026): the server
+     is told its stamp, and answers with nothing when the report has not been
+     saved since — the page then opens from the copy at once */
+  const kept = canGz && !again ? await reportCacheGet(slug) : null;
+  const first = kept ? { credentials: 'same-origin', headers: Object.assign({ 'x-report-have': kept.stamp }, ask.headers) } : ask;
+  const res = await fetch('/api/data?brand=' + encodeURIComponent(slug), first);
   if (!res.ok) { location.href = '/'; return; }
-  const out = await res.json();
+  let out;
+  if (res.headers.get('x-report-gzip') === '1') {
+    const n = Number(res.headers.get('x-report-parts')) || 1;
+    const same = kept && res.headers.get('x-report-same') === '1';
+    let packed = same ? kept.blob : await res.blob();
+    if (n > 1 && !same) {
+      const stamp = res.headers.get('x-report-stamp') || '';
+      const rest = await Promise.all(Array.from({ length: n - 1 }, (x, i) =>
+        fetch('/api/data?brand=' + encodeURIComponent(slug) + '&part=' + (i + 1) +
+              '&stamp=' + encodeURIComponent(stamp), ask)));
+      if (rest.some(r => !r.ok)) {
+        /* saved again while we were reading it: read it once more from the start */
+        if (rest.some(r => r.status === 409) && !again) return openBrand(slug, true);
+        location.href = '/'; return;
+      }
+      packed = new Blob([packed].concat(await Promise.all(rest.map(r => r.blob()))));
+    }
+    out = JSON.parse(await new Response(packed.stream().pipeThrough(new DecompressionStream('gzip'))).text());
+    if (!same && res.headers.get('x-report-stamp')) reportCachePut(slug, res.headers.get('x-report-stamp'), packed);
+  } else {
+    out = await res.json();
+  }
   ROLE = out.role || 'viewer';
 
   /* A brand project knows its own name from its environment; the dataset only

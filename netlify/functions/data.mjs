@@ -1,5 +1,40 @@
+import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { authOf, brandSlug, store, DATA_KEY, legacyDataKey, json }
   from './_shared.mjs';
+
+/* KetoChow (Nov 2026): the document runs past what one function answer may
+   carry (about 6 MB). A page that says it can unpack gzip (x-report-gzip: 1)
+   gets it packed, and in parts of PART bytes when even packed it is larger:
+   the first answer says how many parts and a stamp of the document; the rest
+   are asked for with ?part=i&stamp=…, and a stamp that no longer matches (the
+   report was saved in between) answers 409 so the page starts again. */
+const PART = Number(process.env.REPORT_PART_BYTES) || 3500000;
+function packed(body) {
+  const gz = gzipSync(Buffer.from(JSON.stringify(body), 'utf8'));
+  const stamp = createHash('sha1').update(gz).digest('hex').slice(0, 16);
+  const n = Math.max(1, Math.ceil(gz.length / PART));
+  return { gz, stamp, n };
+}
+function packedAnswer(body, req) {
+  const u = new URL(req.url);
+  const p = packed(body);
+  const part = Number(u.searchParams.get('part') || 0);
+  if (part) {
+    if (u.searchParams.get('stamp') !== p.stamp) return json({ error: 'the report changed' }, 409);
+    if (!(part > 0 && part < p.n)) return json({ error: 'no such part' }, 404);
+  }
+  /* the page already holds this very document (its browser cache): say so
+     and send nothing (Nov 2026) */
+  if (!part && req.headers.get('x-report-have') === p.stamp) {
+    return new Response(null, { status: 200, headers: { 'cache-control': 'no-store',
+      'x-report-gzip': '1', 'x-report-same': '1', 'x-report-parts': String(p.n), 'x-report-stamp': p.stamp } });
+  }
+  const slice = p.gz.subarray(part * PART, Math.min(p.gz.length, (part + 1) * PART));
+  return new Response(slice, { status: 200, headers: {
+    'content-type': 'application/octet-stream', 'cache-control': 'no-store',
+    'x-report-gzip': '1', 'x-report-parts': String(p.n), 'x-report-stamp': p.stamp } });
+}
 
 /**
  * What a brand is sent.
@@ -61,10 +96,10 @@ export default async (req) => {
      Read it once more here so the split does not look like data loss; the next
      save writes it to the bare key and this stops mattering. */
   if (!ds) { try { ds = await s.get(legacyDataKey(), { type: 'json' }); } catch (e) { ds = null; } }
-  if (!ds) return json({ role: role, brand: brandSlug(), dataset: null });
-
-  return json({ role: role, brand: brandSlug(),
-                dataset: role === 'admin' ? ds : forViewer(ds) });
+  const body = ds ? { role: role, brand: brandSlug(), dataset: role === 'admin' ? ds : forViewer(ds) }
+                  : { role: role, brand: brandSlug(), dataset: null };
+  if (req.headers.get('x-report-gzip') === '1') return packedAnswer(body, req);
+  return json(body);
 };
 
 export const config = { path: '/api/data' };
