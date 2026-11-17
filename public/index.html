@@ -6235,6 +6235,10 @@ function brandHit(text, ds) {
   if (word && t.indexOf(word) >= 0) return true;
   const b = String(ds && ds.brand || '').trim();
   if (!b || b === 'Brand') return false;
+  /* the name written with or without its spaces: the page is "KetoChow", the
+     Fee Preview's brand column "Keto Chow" (Nov 2026 — the file was refused) */
+  const squash = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (squash(b).length >= 4 && squash(t).indexOf(squash(b)) >= 0) return true;
   const bw = b.split(/[\s&+-]+/).filter(Boolean);
   /* the page holds initials: "SRL" against "Skin Research Labs …" */
   if (bw.length === 1 && /^[A-Za-z]{2,6}$/.test(bw[0])) {
@@ -6817,8 +6821,42 @@ function runChecks(ds) {
     ' product(s) show no margin — missing landed cost or fulfilment cost: ' +
     noCogs.slice(0, 5).join(', ') + (noCogs.length > 5 ? '…' : '') + '.' });
 
+  const big = reportSizeCheck(ds);
+  if (big) out.push(big);
+
   if (!out.length) out.push({ level: 'ok', text: 'All checks passed.' });
   return out;
+}
+
+/* ---------- is the report getting too big? (KetoChow, Nov 2026) ----------
+ * The whole report is one document, fetched packed every time it is opened
+ * (unless this browser kept it) and saved packed. It opens more slowly as it
+ * grows, and a save of more than SIZE_MAX packed is refused. Order detail (All
+ * Orders, kept line by line) is nearly all of the growth, so the check says
+ * how much of the document it is, what a month of it weighs, and where its
+ * oldest months can be removed. The packed size is the one the last open or
+ * save measured; before either, a quarter of the raw size stands for it. */
+const SIZE_WARN = 16 * 1024 * 1024, SIZE_BAD = 40 * 1024 * 1024, SIZE_MAX = 64 * 1024 * 1024;
+var REPORT_PACKED = null;
+function mb(n) { return (n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0) + ' MB'; }
+function reportSizeCheck(ds) {
+  const raw = JSON.stringify(ds).length;
+  const packed = REPORT_PACKED || raw / 4;
+  if (packed < SIZE_WARN) return null;
+  const ord = JSON.stringify(ds.orders || {}).length;
+  const months = {};
+  Object.keys(ds.orders || {}).forEach(k => { months[k.slice(0, 7)] = 1; });
+  const ms = Object.keys(months).sort();
+  const perMonth = ms.length ? ord / ms.length : 0;
+  const oldest = ms.length ? fromKey(ms[0] + '-01') : null;
+  const bad = packed >= SIZE_BAD;
+  return { level: bad ? 'bad' : 'warn', text: 'The report is <b>' + mb(packed) + ' packed</b> (' + mb(raw) + ' raw)' +
+    (bad ? ' — at ' + mb(SIZE_MAX) + ' it can no longer be saved.' : ' and opens more slowly as it grows.') +
+    (ord > raw / 3 && oldest
+      ? ' Order detail is ' + mb(ord) + ' of it, about ' + mb(perMonth) + ' raw a month. To make room, remove its oldest months under ' +
+        '<b>What is loaded → Order detail (Subscribe &amp; Save)</b>, from ' + DMON[oldest.getMonth()] + ' ' + oldest.getFullYear() +
+        ' on — download a month first if you want to keep it. Sales and products for those months stay, from the daily and Sales by ASIN exports.'
+      : ' Remove the oldest months of whatever is largest under <b>What is loaded</b> — download them first if you want to keep them.') };
 }
 
 /** Whether a product is on the report tables under the status pick on screen. */
@@ -23327,6 +23365,13 @@ async function saveToSite() {
   let ok = false;
   try {
     const body = await gzipString(JSON.stringify(DS));
+    if (typeof CompressionStream !== 'undefined') REPORT_PACKED = body.size;
+    /* past what the site keeps: say so here, before sending, with what to remove */
+    if (body.size > SIZE_MAX) {
+      const c = reportSizeCheck(DS);
+      throw new Error('the report is ' + mb(body.size) + ' packed, more than the ' + mb(SIZE_MAX) + ' the site keeps. ' +
+        (c ? c.text.replace(/<[^>]*>/g, '').replace(/^.*?(Order detail|Remove)/, '$1') : ''));
+    }
     const headers = { 'x-report-write': '1', 'x-report-gzip':
         typeof CompressionStream === 'undefined' ? '0' : '1' };
     const url = '/api/save?brand=' + encodeURIComponent(BRAND || '');
@@ -23532,6 +23577,7 @@ async function openBrand(slug, again) {
       }
       packed = new Blob([packed].concat(await Promise.all(rest.map(r => r.blob()))));
     }
+    REPORT_PACKED = packed.size;
     out = JSON.parse(await new Response(packed.stream().pipeThrough(new DecompressionStream('gzip'))).text());
     if (!same && res.headers.get('x-report-stamp')) reportCachePut(slug, res.headers.get('x-report-stamp'), packed);
   } else {
