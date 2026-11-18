@@ -1910,6 +1910,20 @@ tr.isect td { background:#f3f0e9; font-weight:700; font-size:.78rem; letter-spac
     </div>
   </div>
 
+  <!-- The same period a second way: by the Category column of the product-data
+       file. Shown only once some product carries one. -->
+  <div class="tablewrap" id="cattable" hidden>
+    <div class="thead">
+      <div class="theadrow">
+        <h2 id="catTitle">Category overview</h2>
+        <div class="filters"><span class="sub" id="cNote"></span></div>
+      </div>
+    </div>
+    <div class="scroll">
+      <table><thead><tr id="cHeadRow"></tr></thead><tbody id="cRows"></tbody></table>
+    </div>
+  </div>
+
   <div class="tablewrap" id="tablewrap">
     <div class="thead">
       <div class="theadrow">
@@ -2469,7 +2483,7 @@ function detect(head) {
   if (has('asin') && (has('total cogs') || has('total') || has('total cogs') ||
       has('landed manufacturer') || has('group') || has('sku') ||
       has('product') || has('core sku') ||
-      has('internal sku') || has('fba/fbm') || has('status'))) return 'cogs';
+      has('internal sku') || has('fba/fbm') || has('status') || has('category'))) return 'cogs';
   if (has('year') && has('month') && (has('plan sales') || has('planned sales'))) return 'plan';
   /* Amazon's bundle report: one row per bundle per day it sold on. */
   if (has('bundle_asin') || (has('bundles_sold') && has('date'))) return 'bundles';
@@ -3383,7 +3397,7 @@ function readFbaInv(objs, at) {
 /* The one file per brand: who the product is, then what it costs. SKU sits
    beside the ASIN because that is how a product is looked up in Seller
    Central, and the date it applies from closes the list. */
-const COGS_COLS = ['ASIN', 'SKU', 'Internal SKU', 'Product', 'Status', 'FBA/FBM', 'Group', 'Image', 'Group effective from', 'Case Pack', 'Pallet Count',
+const COGS_COLS = ['ASIN', 'SKU', 'Internal SKU', 'Product', 'Status', 'FBA/FBM', 'Group', 'Category', 'Image', 'Group effective from', 'Case Pack', 'Pallet Count',
                    'TOTAL COGS', 'Price', 'Referral fee', 'Fulfilment fee', 'Source',
                    'COGS Effective from',
                    /* what the detail page should say — read against the Keepa snapshot on the QC view of the Products page */
@@ -3516,6 +3530,11 @@ function readCogsRows(objs) {
     const stOk = ['N/A', 'New', 'Active', 'Discontinued', 'Deleted', 'Closed'].find(x => x.toLowerCase() === st.toLowerCase()) || (/^n\.?a\.?$/i.test(st) ? 'N/A' : null);
     /* a status of the brand's own — added on the Products page — is kept as typed */
     if (stOk) r.status = stOk; else if (st) r.status = st.slice(0, 30);
+    /* A second grouping, alongside the variation group: the category the
+       brand files the product under. Its own table opens under the group
+       table once any product has one (from Alen, Nov 2026). */
+    const cat = String(o['Category'] == null ? (o['category'] == null ? '' : o['category']) : o['Category']).trim();
+    if (cat) r.category = cat;
     /* A picture of the product, by web address, shown small beside its name.
        Only an http(s) address is kept — anything else is a typo, not a picture.
        A blank cell leaves the one on file alone. */
@@ -4869,6 +4888,7 @@ function adAsinAgg(ds, from, to) {
     r.name = ng.name;
     r.group = ng.group;
     r.image = ng.image;
+    r.category = ng.category;
     r.groupMix = groupMixOf(pr, r.asin, ng.group);
     r.sku = ng.sku;
     r.acos = r.adSales ? r.spend / r.adSales : null;
@@ -5272,7 +5292,7 @@ function mergeDataset(ds, inc) {
    file now — it is all the brand's own information about its own products —
    but they are still resolved differently for a period, because money divides
    by days and a variation group does not. */
-const PD_IDENTITY = ['sku', 'name', 'group', 'status', 'casePack', 'palletCount', 'image', 'internalSku', 'ff'];
+const PD_IDENTITY = ['sku', 'name', 'group', 'category', 'status', 'casePack', 'palletCount', 'image', 'internalSku', 'ff'];
 const PD_COST = ['cogs', 'fbmFee'];
 const PD_FIELDS = PD_IDENTITY.concat(PD_COST);
 
@@ -5605,7 +5625,8 @@ function nameGroup(ds, asin, pmap, title) {
   const c = (ds.cogs && ds.cogs[asin]) || (ds.names && ds.names[asin]) || null;
   const name = (p && p.name) || (c && c.name) || (title || asin).slice(0, 44);
   const group = (p && p.group) || (c && c.group) || 'Unmapped';
-  return { name: name, group: group, sku: p ? p.sku : '', image: (p && p.image) || (c && c.image) || null };
+  return { name: name, group: group, sku: p ? p.sku : '', image: (p && p.image) || (c && c.image) || null,
+           category: (p && p.category) || (c && c.category) || null };
 }
 
 /**
@@ -5803,6 +5824,7 @@ function foldAsin(ds, rows, from, to) {
       asin: x.asin,
       name: ng.name,
       group: ng.group,
+      category: ng.category,
       image: ng.image,
       groupMix: gmix,
       sessions: x.sessions, pageViews: x.pageViews,
@@ -6828,36 +6850,6 @@ function runChecks(ds) {
   return out;
 }
 
-/* ---------- is the report getting too big? (KetoChow, Nov 2026) ----------
- * The whole report is one document, fetched packed every time it is opened
- * (unless this browser kept it) and saved packed. It opens more slowly as it
- * grows, and a save of more than SIZE_MAX packed is refused. Order detail (All
- * Orders, kept line by line) is nearly all of the growth, so the check says
- * how much of the document it is, what a month of it weighs, and where its
- * oldest months can be removed. The packed size is the one the last open or
- * save measured; before either, a quarter of the raw size stands for it. */
-const SIZE_WARN = 16 * 1024 * 1024, SIZE_BAD = 40 * 1024 * 1024, SIZE_MAX = 64 * 1024 * 1024;
-var REPORT_PACKED = null;
-function mb(n) { return (n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0) + ' MB'; }
-function reportSizeCheck(ds) {
-  const raw = JSON.stringify(ds).length;
-  const packed = REPORT_PACKED || raw / 4;
-  if (packed < SIZE_WARN) return null;
-  const ord = JSON.stringify(ds.orders || {}).length;
-  const months = {};
-  Object.keys(ds.orders || {}).forEach(k => { months[k.slice(0, 7)] = 1; });
-  const ms = Object.keys(months).sort();
-  const perMonth = ms.length ? ord / ms.length : 0;
-  const oldest = ms.length ? fromKey(ms[0] + '-01') : null;
-  const bad = packed >= SIZE_BAD;
-  return { level: bad ? 'bad' : 'warn', text: 'The report is <b>' + mb(packed) + ' packed</b> (' + mb(raw) + ' raw)' +
-    (bad ? ' — at ' + mb(SIZE_MAX) + ' it can no longer be saved.' : ' and opens more slowly as it grows.') +
-    (ord > raw / 3 && oldest
-      ? ' Order detail is ' + mb(ord) + ' of it, about ' + mb(perMonth) + ' raw a month. To make room, remove its oldest months under ' +
-        '<b>What is loaded → Order detail (Subscribe &amp; Save)</b>, from ' + DMON[oldest.getMonth()] + ' ' + oldest.getFullYear() +
-        ' on — download a month first if you want to keep it. Sales and products for those months stay, from the daily and Sales by ASIN exports.'
-      : ' Remove the oldest months of whatever is largest under <b>What is loaded</b> — download them first if you want to keep them.') };
-}
 
 /** Whether a product is on the report tables under the status pick on screen. */
 function productShownNow(ds, asin) {
@@ -6873,6 +6865,76 @@ function productShownNow(ds, asin) {
 var _statusPred = null;
 /* the predicate is rebuilt when a product sheet is loaded: the sheets' dates are its fingerprint */
 function _statusStamp(ds) { return Object.keys((ds && ds.cogsAt) || {}).join('|') + ':' + Object.keys((ds && ds.cogsAt) || {}).map(d => Object.keys(ds.cogsAt[d]).length).join(','); }
+
+/* how this build's project sends and keeps the report: 'raw' or 'packed' (in parts) */
+const SIZE_MODE = 'packed', SIZE_SAVE_MAX = 64 * 1048576;
+/* ---------- is the report getting too big? (Nov 2026) ----------
+ * The whole report is one document: the site sends all of it every time the
+ * report is opened and receives all of it on every save. A brand whose
+ * project answers plainly ('raw') can be sent about 6 MB — past that the
+ * report opens empty, with no other sign. One whose project answers packed
+ * and in parts ('packed': CountryMax, KetoChow) has no such wall, but opens
+ * more slowly as the document grows. The check in the band says when that
+ * point is near, how much of the document Order detail (All Orders, kept line
+ * by line, nearly all of the growth) is, what a month of it weighs, and where
+ * its oldest months can be removed; and a save that would put the report past
+ * what the site can keep is refused before it is sent. */
+const SIZE_MB = 1048576;
+const SIZE_RULES = SIZE_MODE === 'packed'
+  ? { warn: 16 * SIZE_MB, bad: 40 * SIZE_MB, max: SIZE_SAVE_MAX }
+  : { warn: 4 * SIZE_MB, bad: 5 * SIZE_MB, max: 5.8 * SIZE_MB };
+/* the packed size the last open or save measured (packed projects) */
+var REPORT_PACKED = null;
+function mb(n) { return (n / SIZE_MB).toFixed(n < 10 * SIZE_MB ? 1 : 0) + ' MB'; }
+/** The document the site keeps: every country, the whole account. */
+function reportDoc(ds) {
+  if (typeof docOut === 'function') { try { return docOut(); } catch (e) { /* the page before boot */ } }
+  return typeof rawDs === 'function' && rawDs() ? rawDs() : ds;
+}
+function reportSize(ds) {
+  const raw = JSON.stringify(reportDoc(ds)).length;
+  return { raw: raw, measured: SIZE_MODE === 'packed' ? (REPORT_PACKED || raw / 4) : raw };
+}
+function reportSizeAdvice(doc, raw) {
+  const all = [doc].concat(doc && doc.markets ? Object.keys(doc.markets).map(c => doc.markets[c]) : []);
+  let ord = 0; const months = {};
+  all.forEach(function (d) {
+    if (!d || !d.orders) return;
+    ord += JSON.stringify(d.orders).length;
+    Object.keys(d.orders).forEach(k => { months[k.slice(0, 7)] = 1; });
+  });
+  const ms = Object.keys(months).sort();
+  if (ord > raw / 3 && ms.length) {
+    const o = fromKey(ms[0] + '-01');
+    return ' Order detail is ' + mb(ord) + ' of it, about ' + mb(ord / ms.length) + ' raw a month. To make room, remove its oldest months under ' +
+      '<b>What is loaded → Order detail (Subscribe &amp; Save)</b>, from ' + DMON[o.getMonth()] + ' ' + o.getFullYear() +
+      ' on — download a month first if you want to keep it. Sales and products for those months stay, from the daily and Sales by ASIN exports.';
+  }
+  return ' Remove the oldest months of whatever is largest under <b>What is loaded</b> — download them first if you want to keep them.';
+}
+function reportSizeCheck(ds) {
+  const sz = reportSize(ds);
+  if (sz.measured < SIZE_RULES.warn) return null;
+  const bad = sz.measured >= SIZE_RULES.bad;
+  const head = SIZE_MODE === 'packed'
+    ? 'The report is <b>' + mb(sz.measured) + ' packed</b> (' + mb(sz.raw) + ' raw)' +
+      (bad ? (SIZE_RULES.max ? ' — at ' + mb(SIZE_RULES.max) + ' it can no longer be saved.' : ' — it is getting close to what the site can keep.')
+           : ' and opens more slowly as it grows.')
+    : 'The report is <b>' + mb(sz.raw) + '</b>. The site can send about 6 MB when the report is opened; past that it opens empty' +
+      (bad ? ' — and this is close.' : '.');
+  return { level: bad ? 'bad' : 'warn', text: head + reportSizeAdvice(reportDoc(ds), sz.raw) };
+}
+/** Why a save must not go, in words — or null. `packed` is the body about to be sent. */
+function reportSizeRefusal(ds, packed) {
+  if (!SIZE_RULES.max) return null;
+  const doc = reportDoc(ds);
+  const raw = JSON.stringify(doc).length;
+  const size = SIZE_MODE === 'packed' ? packed : raw;
+  if (size <= SIZE_RULES.max) return null;
+  return 'the report would be ' + mb(size) + (SIZE_MODE === 'packed' ? ' packed' : '') + ', more than the ' + mb(SIZE_RULES.max) +
+    ' the site can ' + (SIZE_MODE === 'packed' ? 'keep' : 'send back when it is opened') + ', so it was not sent.' +
+    reportSizeAdvice(doc, raw).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&');
+}
 
 
 /* ===== 12_render.js ===== */
@@ -8400,6 +8462,7 @@ function dealShort(name) {
 /** The ASINs of a group, as the product data files them now. */
 function groupAsins(group) {
   const rows = typeof prodNow === 'function' ? (prodNow(DS) || {}) : {};
+  if (FOLD_BY === 'category') return Object.keys(rows).filter(a => (rows[a].category || 'No category') === group);
   return Object.keys(rows).filter(a => (rows[a].group || 'Unmapped') === group);
 }
 
@@ -9579,7 +9642,13 @@ const GROUP_SUM = ['units', 'sales', 'sessions', 'pageViews', 'orderItems',
   'marginTotal', 'oItems', 'snsItems', 'snsSales', 'prevSales', 'plan',
   'spend', 'brSpend', 'adSales', 'adUnits', 'impressions', 'clicks'];
 
+/* What a fold is by: the variation group, or — while the Category overview
+   draws and its drawer works out a chart (from Alen, Nov 2026) — the product's category. */
+var FOLD_BY = 'group';
+function withFold(by, fn) { const was = FOLD_BY; FOLD_BY = by; try { return fn(); } finally { FOLD_BY = was; } }
+const foldKeyOf = r => FOLD_BY === 'category' ? (r.category || 'No category') : r.group;
 function groupFold(rows, extra, scope) {
+  if (FOLD_BY === 'category') rows = rows.map(r => Object.assign({}, r, { group: r.category || 'No category', groupMix: null }));
   /* a group counts the products the Group overview's own status pick lets in (Nov 2026) */
   if (typeof statusOkFor === 'function') rows = rows.filter(r => statusOkFor(scope || 'groups', r));
   const by = {}, order = [];
@@ -9762,7 +9831,7 @@ function groupPoints(group, metricId, shownRange, info) {
 function groupPlanFor(group, rg) {
   let sum = 0, any = false;
   if (!rg || !rg.key) return null;              /* a month with no pull has no rows to add up */
-  pullRows(rg.key).filter(y => y.group === group && (typeof statusOkFor !== 'function' || statusOkFor('groups', y))).forEach(function (y) {
+  pullRows(rg.key).filter(y => foldKeyOf(y) === group && (typeof statusOkFor !== 'function' || statusOkFor('groups', y))).forEach(function (y) {
     const v = asinPlanFor(DS, y.asin, rg.from, rg.to);
     if (v != null) { sum += v; any = true; }
   });
@@ -9818,7 +9887,8 @@ function groupDetail(g, open, shownRange, info) {
     twoName(pm, pm2, open.more) + ' for ' + escHtml(g.name) + '"></svg></div>';
 }
 
-function drawGroupChart(g, open, shownRange, info) {
+function drawGroupChart(g, open, shownRange, info, where) {
+  const W = where || { svg: 'gdetail', rows: '#gRows', key: 'gOpen' };
   const ads = view.tab === 'ads';
   const by = ads ? AD_PM_BY_ID : PM_BY_ID;
   const pm = by[open.metric] || (ads ? AD_PM_BY_ID.spend : PM_BY_ID.sales);
@@ -9826,16 +9896,16 @@ function drawGroupChart(g, open, shownRange, info) {
   const more = (open.more || []).map(id => by[id]).filter(Boolean);
   if (pm2 && more.length) {
     const ms = [pm, pm2].concat(more);
-    drawDetailMany('gdetail', ms.map(m => withDeals(groupPoints(g.group, m.id, shownRange, info), groupAsins(g.group), g.group)), ms);
+    drawDetailMany(W.svg, ms.map(m => withDeals(groupPoints(g.group, m.id, shownRange, info), groupAsins(g.group), g.group)), ms);
   } else {
-    drawDetail('gdetail', withDeals(groupPoints(g.group, pm.id, shownRange, info), groupAsins(g.group), g.group),
+    drawDetail(W.svg, withDeals(groupPoints(g.group, pm.id, shownRange, info), groupAsins(g.group), g.group),
       pm2 ? groupPoints(g.group, pm2.id, shownRange, info) : null, pm, pm2);
   }
-  document.querySelectorAll('#gRows .det .chip').forEach(function (b) {
+  document.querySelectorAll(W.rows + ' .det .chip').forEach(function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
-      const next = pickTwo(view.gOpen, b.dataset.gm);
-      view.gOpen = { group: g.group, metric: next.metric, metric2: next.metric2, more: next.more };
+      const next = pickTwo(view[W.key], b.dataset.gm);
+      view[W.key] = { group: g.group, metric: next.metric, metric2: next.metric2, more: next.more };
       render();
     };
   });
@@ -10008,7 +10078,80 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
     const g = shown.find(x => x.group === open.group);
     if (g) drawGroupChart(g, open, shownRange, info);
   }
+  renderCategoryTable(rows, extra, cols, shownRange, info);
   wireBadges();
+}
+
+/* ---------- Category overview ----------
+ * The same fold a second time, by the Category column of the product-data
+ * file instead of the variation group — a brand that files its products two
+ * ways reads the month both ways. It appears only once some product carries
+ * a category; a file without the column leaves the page as it was. A
+ * product with no category sits under "No category", so the table still
+ * adds up to the period. */
+function renderCategoryTable(rows, extra, cols, shownRange, info) {
+  /* everything here folds by category: the table, its totals, its drawer's chart */
+  return withFold('category', () => renderCategoryTable1(rows, extra, cols, shownRange, info));
+}
+function renderCategoryTable1(rows, extra, cols, shownRange, info) {
+  const wrap = document.getElementById('cattable');
+  if (!wrap) return;
+  const any = rows.some(r => r.category);
+  if (!any) { wrap.hidden = true; return; }
+  const recut = rows.map(r => Object.assign({}, r, { group: r.category || 'No category', groupMix: null }));
+  const all = groupFold(recut, extra);
+  if (!all.length) { wrap.hidden = true; return; }
+  if (view.tab === 'ads') adPutTotals(all, info, true);
+  wrap.hidden = false;
+  const key = view.cSort || (view.tab === 'ads' ? 'spend' : 'sales');
+  const dir = view.cDir == null ? -1 : view.cDir;
+  all.sort(function (a, b) {
+    const x = a[key], y = b[key];
+    if (typeof x === 'string') return x.localeCompare(y) * dir * -1;
+    return ((x == null ? -Infinity : x) - (y == null ? -Infinity : y)) * dir;
+  });
+  /* the name with its own little line, as the group table has — by category */
+  const ccols = cols.map(c => c.k === 'name' ? Object.assign({}, c, { t: 'Category',
+    f: g => withSpark(picCell(g.image, asinLink(g.asin, escHtml(g.name), 'pname') + '<span class="grp">' + (g.noProducts ? 'Sponsored Brands and Display — no single product'
+      : g.products === 1 ? '1 product' : g.products + ' products') + '</span>'), view.tab === 'ads' || g.noProducts ? '' : sparkHtml('c', g.group)),
+    tot: t => 'Total<span class="grp">' + t.n + (t.n === 1 ? ' category' : ' categories') + '</span>' }) : c);
+  document.getElementById('cHeadRow').innerHTML = ccols.map(c =>
+    '<th data-k="' + c.k + '">' + c.t + (c.why ? badge('?', c.why) : '') +
+    (key === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') + subHeads(c, key, dir) + '</th>').join('');
+  document.querySelectorAll('#cHeadRow th').forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (key === k) view.cDir = dir * -1; else { view.cSort = k; view.cDir = -1; }
+    render();
+  });
+  const T = { n: all.filter(g => !g.noProducts).length };
+  GROUP_SUM.forEach(f => { T[f] = all.reduce((s, g) => s + (g[f] || 0), 0); });
+  T.brKnown = all.every(g => g.brKnown !== false);
+  T.marginTotal = all.reduce((s, g) => s + (g.marginTotal || 0), 0);
+  if (view.tab === 'ads') T.totalSales = all.some(g => g.totalSales != null) ? all.reduce((s, g) => s + (g.totalSales || 0), 0) : null;
+  /* a click on a figure opens the category's history of it underneath, as the groups do (Nov 2026) */
+  const open = view.cOpen && all.some(g => g.group === view.cOpen.group) ? view.cOpen : null;
+  const det = g => groupDetail(g, open, shownRange, info).replace('id="gdetail"', 'id="cdetail"').replace('data-x="gOpen"', 'data-x="cOpen"')
+    .replace("the group's products added up", "the category's products added up");
+  document.getElementById('cRows').innerHTML =
+    all.map(function (g) {
+      const isOpen = open && g.group === open.group;
+      return '<tr data-c="' + escHtml(g.group) + '"' + (isOpen ? ' class="on"' : '') + '>' + ccols.map(c => '<td class="cell' + (isOpen && onChart(open, c.m) && c.k !== 'name' ? ' picked' : '') + '" data-m="' + c.m + '">' + c.f(g) + '</td>').join('') + '</tr>' +
+        (isOpen ? '<tr class="detail"><td colspan="' + ccols.length + '">' + det(g) + '</td></tr>' : '');
+    }).join('') +
+    '<tr class="tot"><td>' + ccols[0].tot(T) + '</td>' + ccols.slice(1).map(c => '<td>' + (c.tot ? c.tot(T) : '') + '</td>').join('') + '</tr>';
+  document.getElementById('cNote').textContent = all.length + (all.length === 1 ? ' category' : ' categories');
+  document.querySelectorAll('#cRows tr[data-c] td.cell').forEach(function (td) {
+    td.onclick = function (e) {
+      if (e.target.closest('a')) return;
+      const c = td.closest('tr').dataset.c, m = td.dataset.m;
+      view.cOpen = (view.cOpen && view.cOpen.group === c && onChart(view.cOpen, m)) ? null : { group: c, metric: m };
+      render();
+    };
+  });
+  if (open) {
+    const g = all.find(x => x.group === open.group);
+    if (g) drawGroupChart(g, open, shownRange, info, { svg: 'cdetail', rows: '#cRows', key: 'cOpen' });
+  }
 }
 
 /* ---------- the advertising table ----------
@@ -11702,7 +11845,7 @@ function kpiSparkHtml(m, info, cur) {
 let _spark = null;
 function sparkData() {
   if (_spark) return _spark;
-  const info = _info, res = { a: {}, g: {}, labels: [], has: [], unit: '' };
+  const info = _info, res = { a: {}, g: {}, c: {}, labels: [], has: [], unit: '' };
   _spark = res;
   if (!info) return res;
   const mode = info.mode === 'ytd' ? 'month' : info.mode;
@@ -11720,6 +11863,10 @@ function sparkData() {
       if (r.sales == null) return;
       const s = res.a[r.asin] || (res.a[r.asin] = new Array(ps.length).fill(null));
       s[i] = (s[i] || 0) + r.sales;
+      /* and by the Category column, for the Category overview */
+      const ck = r.category || 'No category';
+      const c = res.c[ck] || (res.c[ck] = new Array(ps.length).fill(null));
+      c[i] = (c[i] || 0) + r.sales;
     });
     groupFold(rows, null).forEach(function (g) {
       if (g.sales == null) return;
@@ -11728,13 +11875,13 @@ function sparkData() {
     });
   });
   /* in a period with data, a product or group absent from it sold nothing */
-  [res.a, res.g].forEach(m => Object.keys(m).forEach(k => res.has.forEach((h, i) => { if (h && m[k][i] == null) m[k][i] = 0; })));
+  [res.a, res.g, res.c].forEach(m => Object.keys(m).forEach(k => res.has.forEach((h, i) => { if (h && m[k][i] == null) m[k][i] = 0; })));
   return res;
 }
 /** The line itself: an SVG 92×24, a dot on every period, gaps where no data reached. */
 function sparkHtml(kind, key) {
   const d = sparkData();
-  const s = (kind === 'g' ? d.g : d.a)[key];
+  const s = (kind === 'g' ? d.g : kind === 'c' ? d.c : d.a)[key];
   if (!s || !s.some(v => v != null && v > 0)) return '';
   const W = 92, H = 24, P = 2;
   const vals = s.filter(v => v != null);
@@ -13373,6 +13520,7 @@ function cogsTable(when) {
     row['ASIN'] = a;
     if (row['Product'] == null) row['Product'] = c.name == null ? '' : c.name;
     if (row['Group'] == null) row['Group'] = c.group == null ? '' : c.group;
+    if (row['Category'] == null) row['Category'] = c.category == null ? '' : c.category;
     /* the packing, as the page holds it — a file that never carried the column
        still goes out with what was typed on a later one */
     if (row['Case Pack'] == null) row['Case Pack'] = c.casePack == null ? '' : c.casePack;
@@ -23365,13 +23513,10 @@ async function saveToSite() {
   let ok = false;
   try {
     const body = await gzipString(JSON.stringify(DS));
-    if (typeof CompressionStream !== 'undefined') REPORT_PACKED = body.size;
-    /* past what the site keeps: say so here, before sending, with what to remove */
-    if (body.size > SIZE_MAX) {
-      const c = reportSizeCheck(DS);
-      throw new Error('the report is ' + mb(body.size) + ' packed, more than the ' + mb(SIZE_MAX) + ' the site keeps. ' +
-        (c ? c.text.replace(/<[^>]*>/g, '').replace(/^.*?(Order detail|Remove)/, '$1') : ''));
-    }
+    /* the report past what the site can keep or send back: not sent (Nov 2026) */
+    if (SIZE_MODE === 'packed' && typeof CompressionStream !== 'undefined') REPORT_PACKED = body.size;
+    const tooBig = reportSizeRefusal(DS, body.size);
+    if (tooBig) throw new Error(tooBig);
     const headers = { 'x-report-write': '1', 'x-report-gzip':
         typeof CompressionStream === 'undefined' ? '0' : '1' };
     const url = '/api/save?brand=' + encodeURIComponent(BRAND || '');
