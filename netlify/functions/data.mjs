@@ -9,8 +9,10 @@ import { authOf, brandSlug, store, DATA_KEY, legacyDataKey, json }
    the first answer says how many parts and a stamp of the document; the rest
    are asked for with ?part=i&stamp=…, and a stamp that no longer matches (the
    report was saved in between) answers 409 so the page starts again. */
-const PART = Number(process.env.REPORT_PART_BYTES) || 3500000;
+/* read when asked, so a test can set it */
+const partBytes = () => Number(process.env.REPORT_PART_BYTES) || 3500000;
 function packed(body) {
+  const PART = partBytes();
   const gz = gzipSync(Buffer.from(JSON.stringify(body), 'utf8'));
   const stamp = createHash('sha1').update(gz).digest('hex').slice(0, 16);
   const n = Math.max(1, Math.ceil(gz.length / PART));
@@ -30,6 +32,7 @@ function packedAnswer(body, req) {
     return new Response(null, { status: 200, headers: { 'cache-control': 'no-store',
       'x-report-gzip': '1', 'x-report-same': '1', 'x-report-parts': String(p.n), 'x-report-stamp': p.stamp } });
   }
+  const PART = partBytes();
   const slice = p.gz.subarray(part * PART, Math.min(p.gz.length, (part + 1) * PART));
   return new Response(slice, { status: 200, headers: {
     'content-type': 'application/octet-stream', 'cache-control': 'no-store',
