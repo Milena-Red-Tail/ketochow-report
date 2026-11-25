@@ -16817,6 +16817,14 @@ function inbPackNote(r) {
     (r.pallet ? ' · ' + int(r.pallet) + ' per pallet' : '');
 }
 
+/** How much of what is needed the stock already holds: Total sellable ÷ needed, as a
+    fraction (0.4 = 40%). Not capped — 180% says the stock holds nearly twice the need.
+    Null with no stock figure or nothing needed. (Nov 2026: "% covered" on the cover
+    table and in the workbook, as on Send to Amazon.) */
+function inbCovPct(r) {
+  return r.total == null || !r.targetUnits ? null : r.total / r.targetUnits;
+}
+
 /** ORDER NOW when there is a gap; OK with a month's cover in hand past the target. */
 function inbStatus(row, target) {
   if (row.normDaily == null) return 'UNKNOWN';
@@ -17213,7 +17221,7 @@ function inbCoverCard(info) {
   let lastGroup = null;
   const body = rows.map(function (r) {
     const head = r.group !== lastGroup
-      ? '<tr class="isect"><td colspan="' + (info.awdAt ? 15 : 14) + '">' + escHtml(r.group) + '<span class="sub" style="display:inline;margin-left:8px;text-transform:none;font-weight:400">' +
+      ? '<tr class="isect"><td colspan="' + (info.awdAt ? 16 : 15) + '">' + escHtml(r.group) + '<span class="sub" style="display:inline;margin-left:8px;text-transform:none;font-weight:400">' +
         int(info.groupSold[r.group] || 0) + ' sold ' + info.window + 'd</span></td></tr>' : '';
     lastGroup = r.group;
     const open = INB_OPEN === r.asin;
@@ -17236,6 +17244,7 @@ function inbCoverCard(info) {
         (r.outMin ? '<span class="sub" title="Nothing in stock: what the ' + info.window + '-day rate needs over the days ahead, and at least one case is sent">out of stock · at least ' + (r.pack ? 'a case' : 'one') + '</span>' : '') +
         (r.noPlan ? '<span class="sub" title="The plan does not name this product for these months, so it is the ' + info.window + '-day rate">no plan · ' + info.window + 'd rate</span>'
           : r.basis === 'plan' && r.planOther ? '<span class="sub" title="Days the plan does not cover are counted at the normal daily rate">' + r.planOther + ' days unplanned</span>' : '') + '</td>' +
+      '<td class="num">' + (inbCovPct(r) == null ? '—' : pct(inbCovPct(r), 0)) + '</td>' +
       '<td class="num">' + (r.gap == null ? '—' : int(r.gap)) + '</td>' +
       '<td>' + inbStatusCell(r.status) + '</td>' +
       '<td class="sub">' + (r.deals.length
@@ -17249,7 +17258,7 @@ function inbCoverCard(info) {
     (info.basis === 'plan'
       ? '<b>Needed</b>: ' + info.tLong + ', in units at each product\'s recent price (days or products without a plan at the normal rate). '
       : '<b>' + info.target + 'd target</b> = normal daily × normal days ahead + deal daily × booked deal days. ') +
-    '<b>Gap</b> = target − Total sellable. Click a product for its months.';
+    '<b>% covered</b> = Total sellable ÷ ' + (info.basis === 'plan' ? 'needed' : 'target') + ' (over 100% = more than needed). <b>Gap</b> = target − Total sellable. Click a product for its months.';
 
   const warn = !info.at
     ? 'No FBA inventory file loaded — no stock figures.'
@@ -17273,7 +17282,7 @@ function inbCoverCard(info) {
         (info.awdAt ? '<th>AWD</th>' : '') +
         '<th>Total sellable</th><th>Sold ' + info.window + 'd</th><th>Normal daily</th>' +
         '<th>Deal daily</th><th>Days cover</th><th>' + escHtml(info.tLabel) + '</th>' +
-        '<th>Gap</th><th>Status</th><th>Upcoming deals</th>' +
+        '<th>% covered</th><th>Gap</th><th>Status</th><th>Upcoming deals</th>' +
         '</tr></thead><tbody>' + body + '</tbody></table></div>'
       : '<p class="sub">No products yet.</p>') +
     '</div>';
@@ -17295,7 +17304,7 @@ function inbActionCard(info) {
       '<td class="num">' + int(r.total) + '<span class="sub">' + (r.cover == null ? '' : int(r.cover) + ' days') + '</span></td>' +
       '<td class="num">' + int(r.targetUnits) + '</td>' +
       /* how much of the need the stock already answers — the shortfall as a share */
-      '<td class="num">' + (r.targetUnits ? pct(Math.min(1, r.total / r.targetUnits), 0) : '—') + '</td>' +
+      '<td class="num">' + (inbCovPct(r) == null ? '—' : pct(inbCovPct(r), 0)) + '</td>' +
       '<td class="num">' + int(r.send) + '</td>' +
       '<td class="num">' + (r.cases == null ? '—' : int(r.cases)) + '</td>' +
       '</tr>';
@@ -17359,7 +17368,7 @@ function inboundTable(info) {
   const cols = ['ASIN', 'SKU', 'Internal SKU', 'Product', 'Group', 'Case Pack', 'Pallet Count', 'Available', 'FC Transfer',
     'Inbound'].concat(info.awdAt ? ['AWD'] : []).concat(['Total Sellable', 'Sold ' + info.window + 'd', 'Normal Daily', 'Deal Daily',
     'Days Cover', 'Status', 'Deal Days Ahead', 'Normal Days Ahead',
-    info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target', 'Gap', 'Send Units', 'Send Cases', 'Upcoming Deals']);
+    info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target', '% Covered', 'Gap', 'Send Units', 'Send Cases', 'Upcoming Deals']);
   const rows = info.rows.map(function (r) {
     const o = {};
     o['ASIN'] = r.asin; o['SKU'] = r.sku; o['Internal SKU'] = r.isku; o['Product'] = r.name; o['Group'] = r.group;
@@ -17378,6 +17387,7 @@ function inboundTable(info) {
     o['Deal Days Ahead'] = r.dealDays;
     o['Normal Days Ahead'] = r.normDays;
     o[info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target'] = r.targetUnits == null ? '' : r.targetUnits;
+    o['% Covered'] = inbCovPct(r) == null ? '' : inbCovPct(r);
     o['Gap'] = r.gap == null ? '' : r.gap;
     o['Send Units'] = r.send == null ? '' : r.send;
     o['Send Cases'] = r.cases == null ? '' : r.cases;
@@ -17544,7 +17554,7 @@ const XL_ORANGE = 'C8722A';
    0 default · 1 header · 2..7 text/int/dec × plain/zebra · 8..11 the four statuses · 12 fill-in header */
 const XF = { header: 1, text: 2, int: 3, dec: 4, textZ: 5, intZ: 6, decZ: 7, status: 8, fillin: 12,
   /* money, in the report's own currency (Nov 2026: a chart's revenue came out a bare number) */
-  money: 13, moneyDec: 14, moneyZ: 15, moneyDecZ: 16 };
+  money: 13, moneyDec: 14, moneyZ: 15, moneyDecZ: 16, pct: 17, pctZ: 18 };
 /** The currency sign the workbook writes money in: the country on screen's. */
 function xlCur() { return (typeof CUR !== 'undefined' && CUR) ? String(CUR) : '$'; }
 
@@ -17572,7 +17582,8 @@ function stylesXml() {
   ].concat(XL_STATUS_ORDER.map((s, i) => xf(2 + i, 4 + i, 1, 0, 'horizontal="center" vertical="center"')))
    .concat([xf(1, 4 + XL_STATUS_ORDER.length, 1, 0, 'horizontal="center" vertical="center" wrapText="1"')])
    .concat([xf(0, 0, 1, 166, 'vertical="center"'), xf(0, 0, 1, 167, 'vertical="center"'),
-            xf(0, 3, 1, 166, 'vertical="center"'), xf(0, 3, 1, 167, 'vertical="center"')]);
+            xf(0, 3, 1, 166, 'vertical="center"'), xf(0, 3, 1, 167, 'vertical="center"')])
+   .concat([xf(0, 0, 1, 9, 'vertical="center"'), xf(0, 3, 1, 9, 'vertical="center"')]);
   const cq = xmlEsc('"' + xlCur().replace(/"/g, '') + '"');
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
@@ -17597,8 +17608,10 @@ function sheetXml(cols, rows, tableId, money, pics, drawing) {
       return '<c r="' + ref + '" s="' + (XF.status + XL_STATUS_ORDER.indexOf(String(v))) + '" t="inlineStr"><is><t>' + xmlEsc(v) + '</t></is></c>';
     }
     /* a formula, with the page's own answer cached beside it */
+    const isPct = /^% covered$/i.test(cols[c]);
     if (v && typeof v === 'object' && v.f) {
       const z = zebra;
+      if (isPct) return '<c r="' + ref + '" s="' + (z ? XF.pctZ : XF.pct) + '"><f>' + xmlEsc(v.f) + '</f>' + (typeof v.v === 'number' && isFinite(v.v) ? '<v>' + v.v + '</v>' : '') + '</c>';
       if (typeof v.v === 'number' && isFinite(v.v)) {
         const dec = Math.round(v.v) !== v.v || /daily/i.test(cols[c]);
         return '<c r="' + ref + '" s="' + (dec ? (z ? XF.decZ : XF.dec) : (z ? XF.intZ : XF.int)) + '"><f>' + xmlEsc(v.f) + '</f><v>' + v.v + '</v></c>';
@@ -17606,6 +17619,7 @@ function sheetXml(cols, rows, tableId, money, pics, drawing) {
       const st = cols[c] === 'Status' && XL_STATUS_ORDER.indexOf(String(v.v)) >= 0 ? XF.status + XL_STATUS_ORDER.indexOf(String(v.v)) : (z ? XF.textZ : XF.text);
       return '<c r="' + ref + '" s="' + st + '" t="str"><f>' + xmlEsc(v.f) + '</f><v>' + xmlEsc(v.v == null ? '' : v.v) + '</v></c>';
     }
+    if (typeof v === 'number' && isFinite(v) && isPct) return '<c r="' + ref + '" s="' + (zebra ? XF.pctZ : XF.pct) + '"><v>' + v + '</v></c>';
     if (typeof v === 'number' && isFinite(v) && money[cols[c]]) {
       /* money, with its sign: whole amounts as whole, the rest to the cent */
       const cents = Math.round(v) !== v;
@@ -17756,7 +17770,7 @@ function inboundSheets() {
   /* one packing figure on the shipment sheet: the pallet where the product
      has one, the case otherwise — Milena's rule; the column says which */
   const shipCols = ['ASIN', 'SKU', 'Internal SKU', 'Product', 'Group', 'Pack', 'Units per Pack', 'Total Sellable', 'Normal Daily',
-    'Days Cover', info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target', 'Gap', 'Send Units', 'Send Cases',
+    'Days Cover', info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target', '% Covered', 'Gap', 'Send Units', 'Send Cases',
     'Shipment ID', 'Ship Date', 'Method', 'Tracking IDs'];
   const shipRows = ship.map(function (r) {
     const o = {};
@@ -17766,7 +17780,8 @@ function inboundSheets() {
     o['Total Sellable'] = r.total == null ? '' : r.total;
     o['Normal Daily'] = r.normDaily == null ? '' : Math.round(r.normDaily * 10) / 10;
     o['Days Cover'] = r.cover == null ? '' : r.cover;
-    o[info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target'] = r.targetUnits; o['Gap'] = r.gap;
+    o[info.basis === 'plan' ? 'Plan ' + info.months + ' mo' : info.target + 'd Target'] = r.targetUnits;
+    o['% Covered'] = inbCovPct(r) == null ? '' : inbCovPct(r); o['Gap'] = r.gap;
     o['Send Units'] = r.send; o['Send Cases'] = r.cases == null ? '' : r.cases;
     o['Shipment ID'] = ''; o['Ship Date'] = ''; o['Method'] = ''; o['Tracking IDs'] = '';
     return o;
@@ -17792,7 +17807,7 @@ function inboundCalcSheet(info) {
     'Ordinary days', 'Ordinary units', 'Normal daily', 'Past deal days', 'Past deal units', 'Deal daily',
     'FBA available', 'FC transfer', 'FBA inbound', 'FBA total', 'AWD on hand', 'AWD inbound', 'AWD total', 'Total sellable',
     'Days ahead', 'Deal days ahead', 'Ordinary days ahead', 'Price', 'Plan $ ahead', 'Plan days', 'Other days',
-    'Target units', 'Days cover', 'Gap', 'Case pack', 'Send units', 'Send cases', 'Status'];
+    'Target units', 'Days cover', '% covered', 'Gap', 'Case pack', 'Send units', 'Send cases', 'Status'];
   const L = {}; C.forEach((c, i) => { L[c] = colRef(i); });
   const nz = v => v == null ? '' : v;
   const hasAwd = !!info.awdAt, hasInv = !!(DS.inv && DS.inv.at);
@@ -17830,6 +17845,7 @@ function inboundCalcSheet(info) {
     /* against a plan the cover is walked day by day through the plan — a value, not one formula */
     o['Days cover'] = plan ? nz(r.cover)
       : F('IF(OR(' + c('Total sellable') + '="",N(' + c('Normal daily') + ')<=0),"",ROUNDDOWN(' + c('Total sellable') + '/' + c('Normal daily') + '+1E-9,0))', r.cover);
+    o['% covered'] = F('IF(OR(' + c('Total sellable') + '="",N(' + c('Target units') + ')=0),"",' + c('Total sellable') + '/' + c('Target units') + ')', inbCovPct(r));
     o['Gap'] = F('IF(OR(' + c('Total sellable') + '="",' + c('Target units') + '=""),"",MAX(0,' + c('Target units') + '-' + c('Total sellable') + '))', r.gap);
     o['Case pack'] = nz(r.pack);
     o['Send units'] = F('IF(' + c('Gap') + '="","",IF(N(' + c('Case pack') + ')>0,ROUNDUP(' + c('Gap') + '/' + c('Case pack') + ',0)*' + c('Case pack') + ',' + c('Gap') + '))', r.send);
@@ -17855,6 +17871,7 @@ function inboundCalcSheet(info) {
     ['Price / Plan $ ahead / Plan days / Other days', 'Against the plan only: the price the product has been selling at, the plan\'s revenue over the planned days ahead, those days, and the days ahead the plan does not cover (counted at the normal daily).'],
     ['Target units', '60 days: = ROUND(Normal daily × Ordinary days ahead + Deal daily × Deal days ahead). Plan: = ROUND(Plan $ ahead ÷ Price + Other days × Normal daily).'],
     ['Days cover', '60 days: = ROUNDDOWN(Total sellable ÷ Normal daily). Plan: walked day by day through the plan — a value.'],
+    ['% covered', '= Total sellable ÷ Target units — how much of the need the stock already holds (over 100% = more than needed).'],
     ['Gap', '= MAX(0, Target units − Total sellable).'],
     ['Send units / Send cases', 'The gap rounded up to whole cases of the case pack; without a case pack, the gap itself.'],
     ['Status', 'ORDER NOW when there is a gap; OK when the cover reaches the days ahead + ' + INB_OK_EXTRA + '; else MONITOR. UNKNOWN with no sales to read a rate from.'],
@@ -18072,7 +18089,7 @@ function inbDetailRow(row, info) {
   const short = pts.filter(p => p.partial).map(p => p.label + ' (' + p.days + ' of ' + p.span + ' days)');
   const none = pts.filter(p => p.sold == null && p.forecast == null).map(p => p.label);
   const toSend = pts.reduce((a, p) => a + (p.send || 0), 0);
-  return '<tr class="idet"><td colspan="' + (info.awdAt ? 15 : 14) + '">' +
+  return '<tr class="idet"><td colspan="' + (info.awdAt ? 16 : 15) + '">' +
     '<div class="legend"><span>' + sw(INB_FILL_SOLD) + 'Sold</span>' +
       (row.awd != null
         ? '<span>' + sw(INB_FILL_COVERED) + 'Covered by FBA stock (' + (row.fbaTotal == null ? '—' : int(row.fbaTotal)) + ')</span>' +
